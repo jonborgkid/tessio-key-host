@@ -28,6 +28,11 @@ struct ContentView: View {
                     Image(systemName: "play.circle")
                     Text("Now Playing")
                 }
+            SettingsView()
+                .tabItem {
+                    Image(systemName: "gear")
+                    Text("Settings")
+                }
         }
     }
 }

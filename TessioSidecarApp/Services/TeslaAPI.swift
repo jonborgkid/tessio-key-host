@@ -1,45 +1,43 @@
 import Foundation
 import Combine
+import SwiftUI
 
 class TeslaAPI: ObservableObject {
-    private let session = URLSession(configuration: .default)
-    private var cancellables = Set<AnyCancellable>()
+    @AppStorage("TeslaAccessToken") private var accessToken: String = ""
+    @AppStorage("TeslaVehicleID") private var vehicleID: String = ""
+
     @Published var vehicleState: VehicleState?
-    
-    // Replace with your vehicle ID
-    private var vehicleID: String? {
-        get { UserDefaults.standard.string(forKey: "TeslaVehicleID") }
-        set { UserDefaults.standard.setValue(newValue, forKey: "TeslaVehicleID") }
-    }
-    
-    // OAuth token storage
-    private var accessToken: String? {
-        get { UserDefaults.standard.string(forKey: "TeslaAccessToken") }
-        set { UserDefaults.standard.setValue(newValue, forKey: "TeslaAccessToken") }
-    }
-    
+    @Published var guiSettings: GUISettings?
+
+    private var timer: Timer?
+
     func startPolling() {
-        Timer.publish(every: 30, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                self?.fetchVehicleData()
-            }
-            .store(in: &cancellables)
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { await self?.fetchVehicleData() }
+        }
+        timer?.tolerance = 5
+        timer?.fire()
     }
-    
-    private func fetchVehicleData() {
-        guard let vehicleID = vehicleID, let token = accessToken else { return }
+
+    func stopPolling() {
+        timer?.invalidate()
+    }
+
+    private func fetchVehicleData() async {
+        guard !vehicleID.isEmpty, !accessToken.isEmpty else { return }
         var request = URLRequest(url: URL(string: "https://owner-api.teslamotors.com/api/1/vehicles/\(vehicleID)/vehicle_data")!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        session.dataTaskPublisher(for: request)
-            .map { $0.data }
-            .decode(type: VehicleDataResponse.self, decoder: JSONDecoder())
-            .replaceError(with: VehicleDataResponse(response: nil))
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] data in
-                self?.vehicleState = data.response?.vehicle_state
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let decoded = try JSONDecoder().decode(VehicleDataResponse.self, from: data)
+            await MainActor.run {
+                self.vehicleState = decoded.response?.vehicle_state
+                self.guiSettings = decoded.response?.gui_settings
             }
-            .store(in: &cancellables)
+        } catch {
+            // In this prototype we silently ignore errors
+        }
     }
 }
 
@@ -49,9 +47,15 @@ struct VehicleDataResponse: Codable {
 
 struct VehicleData: Codable {
     let vehicle_state: VehicleState
+    let gui_settings: GUISettings
 }
 
 struct VehicleState: Codable {
     let car_version: String?
     let locked: Bool?
+}
+
+struct GUISettings: Codable {
+    let gui_24_hour_time: Bool?
+    let gui_distance_units: String?
 }
